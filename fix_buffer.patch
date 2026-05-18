@@ -1,0 +1,80 @@
+--- micro_ros_stm32cubemx_utils/extra_sources/microros_transports/udp_transport.c
++++ micro_ros_stm32cubemx_utils/extra_sources/microros_transports/udp_transport.c
+@@ -20,29 +20,31 @@
+ static struct udp_pcb *udp_client_pcb = NULL;
+ static uint8_t agent_ip[4] = {192, 168, 1, 10};
+ 
+-// A simple single-packet buffer for receiving
+-static volatile bool rx_data_ready = false;
+-static uint8_t rx_buffer[1024];
+-static size_t rx_len = 0;
++#define MAX_RX_PACKETS 8
++typedef struct {
++    uint8_t data[1024];
++    size_t len;
++} udp_packet_t;
++
++static udp_packet_t rx_packets[MAX_RX_PACKETS];
++static volatile int rx_head = 0;
++static volatile int rx_tail = 0;
+ 
+ static void udp_receive_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+ {
+     if (p != NULL)
+     {
+-        // Copy data into our simple buffer if not busy
+-        if (!rx_data_ready)
++        int next_head = (rx_head + 1) % MAX_RX_PACKETS;
++        if (next_head != rx_tail)
+         {
+-            if (p->tot_len <= sizeof(rx_buffer))
++            if (p->tot_len <= sizeof(rx_packets[rx_head].data))
+             {
+-                pbuf_copy_partial(p, rx_buffer, p->tot_len, 0);
+-                rx_len = p->tot_len;
+-                rx_data_ready = true;
++                pbuf_copy_partial(p, rx_packets[rx_head].data, p->tot_len, 0);
++                rx_packets[rx_head].len = p->tot_len;
++                rx_head = next_head;
+             }
+         }
+         pbuf_free(p);
+     }
+ }
+ 
+@@ -66,8 +68,8 @@
+ 
+     udp_recv(udp_client_pcb, udp_receive_callback, NULL);
+ 
+-    rx_data_ready = false;
+-    rx_len = 0;
++    rx_head = 0;
++    rx_tail = 0;
+ 
+     return true;
+ }
+@@ -107,18 +109,19 @@
+     (void)err;
+ 
+     int elapsed = 0;
+-    while (!rx_data_ready && elapsed < timeout)
++    while ((rx_head == rx_tail) && elapsed < timeout)
+     {
+         MX_LWIP_Process();
+         osDelay(1);
+         elapsed += 1;
+     }
+ 
+-    if (rx_data_ready)
++    if (rx_head != rx_tail)
+     {
+-        size_t copy_len = (rx_len > len) ? len : rx_len;
+-        memcpy(buf, rx_buffer, copy_len);
+-        rx_data_ready = false;
++        size_t pkt_len = rx_packets[rx_tail].len;
++        size_t copy_len = (pkt_len > len) ? len : pkt_len;
++        memcpy(buf, rx_packets[rx_tail].data, copy_len);
++        rx_tail = (rx_tail + 1) % MAX_RX_PACKETS;
+         return copy_len;
+     }
+ 
